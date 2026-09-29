@@ -240,11 +240,20 @@ PLAYER_HTML = """<!DOCTYPE html>
 <script>
   var el = document.getElementById('player');
   if (el) {
-    new Plyr(el, {
+    // [পরিবর্তন ১]: "new Plyr" এর আগে "var player =" যুক্ত করা হয়েছে
+    var player = new Plyr(el, {
       controls: ['play-large','play','progress','current-time','duration','mute','volume','settings','pip','fullscreen'],
       settings: ['speed'],
-      speed: { selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] },
+      
+      // [পরিবর্তন ২]: selected-কে 3 করা হয়েছে এবং options-এ 2.5, 3, 3.5, 4 যোগ করা হয়েছে
+      speed: { selected: 3, options: [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4] },
+      
       keyboard: { focused: true, global: true }
+    });
+    
+    // [পরিবর্তন ৩]: ডিফল্ট ৩x স্পিড নিশ্চিত করতে নিচের ৪টি নতুন লাইন যোগ করা হয়েছে
+    player.on('ready', function() {
+      player.speed = 3;
     });
   }
 </script>
