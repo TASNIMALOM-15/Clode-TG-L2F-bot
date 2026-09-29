@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # =========================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8640151693:AAEh8_HnwbfqGnW9sVibRe8mIUJHvXPHeEs")
 PORT = int(os.environ.get("PORT", 8080))
-SERVER_URL = os.environ.get("SERVER_URL", "").rstrip("/")
+SERVER_URL = os.environ.get("SERVER_URL", "").strip().rstrip("/")
 
 # Global Data Store
 playlists = {}       # Generated playlists: {playlist_id: [video_data]}
@@ -135,7 +135,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       player.speed = 3;
     });
 
-    // অটো-প্লেলিস্ট সাপোর্ট (একটি শেষ হলে পরবর্তী ভিডিও চালু হবে)
     if (playlistData && playlistData.length > 1) {
       player.on('ended', function() {
         if (currentIndex < playlistData.length - 1) {
@@ -181,6 +180,22 @@ def format_size(size_bytes):
     return f"{size:.2f} PB"
 
 
+def get_base_url():
+    """Render বা জেনুইন সার্ভার URL পাওয়ার ব্যাকআপ লজিক"""
+    url = os.environ.get("SERVER_URL", "").strip().rstrip("/")
+    if url:
+        if not url.startswith("http://") and not url.startswith("https://"):
+            url = f"https://{url}"
+        return url
+    
+    # Render-এর নিজস্ব ডিফল্ট এনভায়রনমেন্ট ভ্যারিয়েবল
+    render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
+    if render_host:
+        return f"https://{render_host}"
+        
+    return "https://your-app.onrender.com"
+
+
 # =========================
 # AIOHTTP WEB SERVER HANDLERS
 # =========================
@@ -195,8 +210,6 @@ async def handle_stream(request):
     try:
         tg_file = await app.bot.get_file(file_id)
         video_url = tg_file.file_path
-        
-        # Range Request Support (For smooth video streaming)
         return web.HTTPFound(location=video_url)
     except Exception as e:
         logger.error(f"Error fetching stream file: {e}")
@@ -205,16 +218,9 @@ async def handle_stream(request):
 
 async def handle_player(request):
     file_id = request.match_info.get("file_id")
-    app = request.app["telegram_app"]
-    
-    # Get Server URL dynamically
-    host = request.host
-    scheme = request.scheme
-    base_url = SERVER_URL if SERVER_URL else f"{scheme}://{host}"
-    
+    base_url = get_base_url()
     stream_url = f"{base_url}/stream/{file_id}"
     
-    # Single Video Template Render
     html = HTML_TEMPLATE.replace("__TITLE__", "Streamer Video Player")
     html = html.replace("__PLAYLIST_HEADER__", "")
     html = html.replace("__VIDEO_URL__", stream_url)
@@ -236,7 +242,6 @@ async def handle_playlist_player(request):
     first_item = playlist_items[0]
 
     header_html = f'<div class="playlist-info">🎬 Playing: 1 of {len(playlist_items)} (Auto-play Enabled)</div>'
-
     json_playlist = json.dumps(playlist_items)
 
     html = HTML_TEMPLATE.replace("__TITLE__", first_item["title"])
@@ -281,37 +286,36 @@ async def playlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+    try:
+        user_id = update.effective_user.id
 
-    if user_id not in user_sessions or not user_sessions[user_id]:
-        await update.message.reply_text("❌ No active playlist session found! Send /playlist first.")
-        return
+        if user_id not in user_sessions or not user_sessions[user_id]:
+            await update.message.reply_text("❌ No active playlist session found! Send /playlist first.")
+            return
 
-    video_list = user_sessions[user_id]
-    pl_id = f"pl_{uuid.uuid4().hex[:8]}"
-    
-    # Store playlist in memory
-    playlists[pl_id] = video_list
+        video_list = user_sessions[user_id]
+        pl_id = f"pl_{uuid.uuid4().hex[:8]}"
+        
+        # Store playlist in memory
+        playlists[pl_id] = video_list
 
-    # Determine Base Web URL
-    host_url = SERVER_URL
-    if not host_url:
-        await update.message.reply_text("⚠️ SERVER_URL environment variable is not set. Using temporary links.")
-        host_url = "https://your-app.onrender.com"
+        base_url = get_base_url()
+        playlist_link = f"{base_url}/play/playlist/{pl_id}"
 
-    playlist_link = f"{host_url}/play/playlist/{pl_id}"
-
-    reply_text = (
-        f"🎉 **Playlist Created Successfully!**\n\n"
-        f"🎵 **Total Videos:** {len(video_list)}\n"
-        f"🔗 **Playlist Link:** {playlist_link}\n\n"
-        f"⚡ *All videos will play automatically one after another!*"
-    )
-    
-    await update.message.reply_text(reply_text, parse_mode="Markdown")
-    
-    # Clear session
-    del user_sessions[user_id]
+        reply_text = (
+            f"🎉 **Playlist Created Successfully!**\n\n"
+            f"🎵 **Total Videos:** {len(video_list)}\n"
+            f"🔗 **Playlist Link:** {playlist_link}\n\n"
+            f"⚡ *All videos will play automatically one after another!*"
+        )
+        
+        await update.message.reply_text(reply_text, parse_mode="Markdown")
+        
+        # Clear session
+        del user_sessions[user_id]
+    except Exception as e:
+        logger.error(f"Error in done_command: {e}")
+        await update.message.reply_text(f"⚠️ Error creating playlist: {str(e)}")
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,10 +338,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_size = format_size(video.file_size)
     file_name = video.file_name or f"Video_{message.message_id}.mp4"
 
-    host_url = SERVER_URL if SERVER_URL else f"http://localhost:{PORT}"
-
-    stream_link = f"{host_url}/stream/{file_id}"
-    player_link = f"{host_url}/play/{file_id}"
+    base_url = get_base_url()
+    stream_link = f"{base_url}/stream/{file_id}"
+    player_link = f"{base_url}/play/{file_id}"
 
     # Check if user is in Playlist Mode
     if user_id in user_sessions:
@@ -373,10 +376,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MAIN APP RUNNER
 # =========================
 async def main():
-    # Initialize Telegram Application
     tg_app = Application.builder().token(BOT_TOKEN).build()
 
-    # Add Bot Handlers
     tg_app.add_handler(CommandHandler("start", start_command))
     tg_app.add_handler(CommandHandler("playlist", playlist_command))
     tg_app.add_handler(CommandHandler("done", done_command))
@@ -387,11 +388,9 @@ async def main():
     await tg_app.start()
     await tg_app.updater.start_polling()
 
-    # Initialize Web Server (aiohttp)
     web_app = web.Application()
     web_app["telegram_app"] = tg_app
 
-    # Routes Setup
     web_app.router.add_get("/", handle_home)
     web_app.router.add_get("/stream/{file_id}", handle_stream)
     web_app.router.add_get("/play/{file_id}", handle_player)
@@ -404,10 +403,8 @@ async def main():
 
     logger.info(f"🤖 Bot & Web Server Started Successfully on Port {PORT}!")
 
-    # Keep running forever
     await asyncio.Event().wait()
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
