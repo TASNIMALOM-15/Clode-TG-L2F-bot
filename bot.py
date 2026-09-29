@@ -3,6 +3,7 @@ import re
 import json
 import uuid
 import time
+import html
 import asyncio
 import logging
 from aiohttp import web
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 # =========================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8640151693:AAEh8_HnwbfqGnW9sVibRe8mIUJHvXPHeEs")
 PORT = int(os.environ.get("PORT", 8080))
-SERVER_URL = os.environ.get("SERVER_URL", "").strip().rstrip("/")
 
 # Global Data Store
 playlists = {}       # Generated playlists: {playlist_id: [video_data]}
@@ -104,15 +104,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
 <div class="wrap">
-  <h1>__TITLE__</h1>
+  <h1 id="video-title">__TITLE__</h1>
   <div class="card">
     __PLAYLIST_HEADER__
     <video id="player" playsinline controls data-poster="__POSTER__">
       <source src="__VIDEO_URL__" type="video/mp4" />
     </video>
     <div class="meta">
-      <div class="size-info">Size: __SIZE__</div>
-      <a class="btn" href="__DL__" download>⬇️ Download</a>
+      <div class="size-info" id="video-size">Size: __SIZE__</div>
+      <a class="btn" id="download-btn" href="__DL__" download>⬇️ Download</a>
     </div>
   </div>
 </div>
@@ -147,10 +147,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             sources: [{ src: nextVideo.src, type: 'video/mp4' }]
           };
           
-          document.querySelector('h1').innerText = nextVideo.title;
-          var sizeEl = document.querySelector('.size-info');
+          document.getElementById('video-title').innerText = nextVideo.title;
+          var sizeEl = document.getElementById('video-size');
           if (sizeEl) sizeEl.innerText = "Size: " + nextVideo.size;
-          var dlEl = document.querySelector('.btn');
+          var dlEl = document.getElementById('download-btn');
           if (dlEl) dlEl.href = nextVideo.download;
           var plHeader = document.querySelector('.playlist-info');
           if (plHeader) plHeader.innerText = "🎬 Playing: " + (currentIndex + 1) + " of " + playlistData.length;
@@ -181,14 +181,13 @@ def format_size(size_bytes):
 
 
 def get_base_url():
-    """Render বা জেনুইন সার্ভার URL পাওয়ার ব্যাকআপ লজিক"""
+    """Render বা জেনুইন সার্ভার URL পাওয়ার লজিক"""
     url = os.environ.get("SERVER_URL", "").strip().rstrip("/")
     if url:
         if not url.startswith("http://") and not url.startswith("https://"):
             url = f"https://{url}"
         return url
     
-    # Render-এর নিজস্ব ডিফল্ট এনভায়রনমেন্ট ভ্যারিয়েবল
     render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME", "").strip()
     if render_host:
         return f"https://{render_host}"
@@ -221,15 +220,15 @@ async def handle_player(request):
     base_url = get_base_url()
     stream_url = f"{base_url}/stream/{file_id}"
     
-    html = HTML_TEMPLATE.replace("__TITLE__", "Streamer Video Player")
-    html = html.replace("__PLAYLIST_HEADER__", "")
-    html = html.replace("__VIDEO_URL__", stream_url)
-    html = html.replace("__DL__", stream_url)
-    html = html.replace("__SIZE__", "Telegram Stream")
-    html = html.replace("__POSTER__", "")
-    html = html.replace("__PLAYLIST_JSON__", "null")
+    html_code = HTML_TEMPLATE.replace("__TITLE__", "Streamer Video Player")
+    html_code = html_code.replace("__PLAYLIST_HEADER__", "")
+    html_code = html_code.replace("__VIDEO_URL__", stream_url)
+    html_code = html_code.replace("__DL__", stream_url)
+    html_code = html_code.replace("__SIZE__", "Telegram Stream")
+    html_code = html_code.replace("__POSTER__", "")
+    html_code = html_code.replace("__PLAYLIST_JSON__", "null")
 
-    return web.Response(text=html, content_type="text/html")
+    return web.Response(text=html_code, content_type="text/html")
 
 
 async def handle_playlist_player(request):
@@ -244,15 +243,15 @@ async def handle_playlist_player(request):
     header_html = f'<div class="playlist-info">🎬 Playing: 1 of {len(playlist_items)} (Auto-play Enabled)</div>'
     json_playlist = json.dumps(playlist_items)
 
-    html = HTML_TEMPLATE.replace("__TITLE__", first_item["title"])
-    html = html.replace("__PLAYLIST_HEADER__", header_html)
-    html = html.replace("__VIDEO_URL__", first_item["src"])
-    html = html.replace("__DL__", first_item["download"])
-    html = html.replace("__SIZE__", first_item["size"])
-    html = html.replace("__POSTER__", "")
-    html = html.replace("__PLAYLIST_JSON__", json_playlist)
+    html_code = HTML_TEMPLATE.replace("__TITLE__", html.escape(first_item["title"]))
+    html_code = html_code.replace("__PLAYLIST_HEADER__", header_html)
+    html_code = html_code.replace("__VIDEO_URL__", first_item["src"])
+    html_code = html_code.replace("__DL__", first_item["download"])
+    html_code = html_code.replace("__SIZE__", first_item["size"])
+    html_code = html_code.replace("__POSTER__", "")
+    html_code = html_code.replace("__PLAYLIST_JSON__", json_playlist)
 
-    return web.Response(text=html, content_type="text/html")
+    return web.Response(text=html_code, content_type="text/html")
 
 
 # =========================
@@ -260,18 +259,18 @@ async def handle_playlist_player(request):
 # =========================
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "👋 **Welcome to Streamer Bot!**\n\n"
-        "📹 **Single Video:** Send or forward any video to get instant Stream & Download links.\n\n"
-        "🎶 **Playlist Mode:**\n"
-        "1. Send **/playlist** to start playlist mode.\n"
-        "2. Send all your videos one by one.\n"
-        "3. Send **/done** to generate a single Playlist link!\n\n"
+        "👋 <b>Welcome to Streamer Bot!</b>\n\n"
+        "📹 <b>Single Video:</b> Send or forward any video to get instant Stream & Download links.\n\n"
+        "🎶 <b>Playlist Mode:</b>\n"
+        "1. Send <b>/playlist</b> to start playlist mode.\n"
+        "2. Send or forward all your videos.\n"
+        "3. Send <b>/done</b> to generate a single Playlist link!\n\n"
         "Commands:\n"
         "/playlist - Start Playlist Mode\n"
         "/done - Finish & Create Playlist\n"
         "/cancel - Cancel Playlist Creation"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 
 async def playlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,9 +278,10 @@ async def playlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions[user_id] = []
     
     await update.message.reply_text(
-        "🎬 **Playlist Mode Started!**\n\n"
-        "Now forward or send videos one by one.\n"
-        "When finished, send **/done** to get your playlist link."
+        "🎬 <b>Playlist Mode Started!</b>\n\n"
+        "Now forward or send videos (one or multiple together).\n"
+        "When finished, send <b>/done</b> to get your playlist link.",
+        parse_mode="HTML"
     )
 
 
@@ -303,19 +303,19 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         playlist_link = f"{base_url}/play/playlist/{pl_id}"
 
         reply_text = (
-            f"🎉 **Playlist Created Successfully!**\n\n"
-            f"🎵 **Total Videos:** {len(video_list)}\n"
-            f"🔗 **Playlist Link:** {playlist_link}\n\n"
-            f"⚡ *All videos will play automatically one after another!*"
+            f"🎉 <b>Playlist Created Successfully!</b>\n\n"
+            f"🎵 <b>Total Videos:</b> {len(video_list)}\n"
+            f"🔗 <b>Playlist Link:</b>\n{playlist_link}\n\n"
+            f"⚡ <i>All videos will play automatically one after another at 3x speed!</i>"
         )
         
-        await update.message.reply_text(reply_text, parse_mode="Markdown")
+        await update.message.reply_text(reply_text, parse_mode="HTML")
         
         # Clear session
         del user_sessions[user_id]
     except Exception as e:
         logger.error(f"Error in done_command: {e}")
-        await update.message.reply_text(f"⚠️ Error creating playlist: {str(e)}")
+        await update.message.reply_text(f"⚠️ Error creating playlist: {html.escape(str(e))}")
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -351,10 +351,11 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "size": file_size
         })
         count = len(user_sessions[user_id])
-        await message.reply_text(f"✅ Video #{count} added to Playlist! Send more or type **/done**.", parse_mode="Markdown")
+        await message.reply_text(f"✅ Video #{count} added to Playlist! Send more or type <b>/done</b>.", parse_mode="HTML")
         return
 
-    # Single Video Output
+    # Single Video Output (HTML Escape added to prevent errors)
+    safe_file_name = html.escape(file_name)
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🌐 Watch Online", url=player_link),
@@ -363,12 +364,12 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
 
     await message.reply_text(
-        f"🎬 **Video Received!**\n\n"
-        f"📁 **Name:** `{file_name}`\n"
-        f"📦 **Size:** {file_size}\n\n"
+        f"🎬 <b>Video Received!</b>\n\n"
+        f"📁 <b>Name:</b> {safe_file_name}\n"
+        f"📦 <b>Size:</b> {file_size}\n\n"
         f"👇 Click below to stream or download:",
         reply_markup=keyboard,
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
