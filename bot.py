@@ -6,6 +6,7 @@ import time
 import html
 import asyncio
 import logging
+import aiohttp
 from aiohttp import web
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -55,7 +56,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .container { width: 100%; max-width: 900px; }
     
-    /* Video Box */
     .player-card {
       background: #1e293b;
       border-radius: 12px;
@@ -92,7 +92,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       font-size: 0.85rem;
     }
 
-    /* Playlist Section UI */
     .playlist-section {
       margin-top: 15px;
       background: #1e293b;
@@ -141,9 +140,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       justify-content: center;
       align-items: center;
       flex-shrink: 0;
-      position: relative;
     }
-    .thumb-box span { font-size: 1.2rem; }
     .item-details { flex-grow: 1; overflow: hidden; }
     .item-title {
       font-size: 0.85rem;
@@ -159,7 +156,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       margin-top: 2px;
     }
 
-    /* Overlay Overlay Button for Landscape/Fullscreen */
     .fs-playlist-btn {
       position: absolute;
       top: 15px;
@@ -310,24 +306,52 @@ def get_base_url():
 
 
 # =========================
-# AIOHTTP SERVER HANDLERS
+# AIOHTTP SERVER HANDLERS (STREAM PROXY FIXED)
 # =========================
 async def handle_home(request):
     return web.Response(text="Bot Web Server is Running Online!", content_type="text/plain")
 
 
 async def handle_stream(request):
-    """অন-ডিম্যান্ড টেলিগ্রাম ডাইরেক্ট লিঙ্ক তৈরি করে স্ট্রিম রিডাইরেক্ট করা"""
+    """টেলিগ্রামের ফাইল এক্সপায়ার বন্ধ করতে প্রক্সি চ্যাঙ্কড স্ট্রিমিং"""
     file_id = request.match_info.get("file_id")
     app = request.app["telegram_app"]
 
     try:
         tg_file = await app.bot.get_file(file_id)
-        video_url = tg_file.file_path
-        return web.HTTPFound(location=video_url)
+        file_path_url = tg_file.file_path
+
+        # কাস্টম হেডার দিয়ে টেলিগ্রাম ফাইল থেকে বাইট রিড করা
+        headers = {}
+        if "Range" in request.headers:
+            headers["Range"] = request.headers["Range"]
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(file_path_url, headers=headers) as resp:
+                response = web.StreamResponse(
+                    status=resp.status,
+                    headers={
+                        "Content-Type": "video/mp4",
+                        "Accept-Ranges": "bytes",
+                        "Content-Disposition": "inline",
+                    }
+                )
+                
+                if "Content-Length" in resp.headers:
+                    response.headers["Content-Length"] = resp.headers["Content-Length"]
+                if "Content-Range" in resp.headers:
+                    response.headers["Content-Range"] = resp.headers["Content-Range"]
+
+                await response.prepare(request)
+
+                async for chunk in resp.content.iter_chunked(1024 * 512): # 512KB chunks
+                    await response.write(chunk)
+
+                return response
+
     except Exception as e:
-        logger.error(f"Error fetching stream file: {e}")
-        return web.Response(text="Error streaming video file or Link Expired.", status=404)
+        logger.error(f"Error streaming video file: {e}")
+        return web.Response(text="Error streaming video file or Telegram API limit reached.", status=500)
 
 
 async def handle_player(request):
@@ -388,7 +412,7 @@ async def playlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         "🎬 <b>Playlist Mode Started!</b>\n\n"
-        "Now send or forward your videos (one by one or all together).\n"
+        "Now send or forward your videos.\n"
         "When finished, send <b>/done</b> to get your playlist link.",
         parse_mode="HTML"
     )
